@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.log
+
+# Virtual env
+venv/
+.venv/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (keep local, private)
+data/raw/*
+data/processed/*
+data/features/*
+data/external/*
+!data/README.md   # 只保留说明文件
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
