@@ -8,6 +8,41 @@ import pandas as pd
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 
+'''
+我们使用一些简单基线方法，我们的阐述的阶段
+来源--->定义--->在线预测的使用
+1.Naive基线：
+“明天和今天一样”
+Naive 预测等价于假设序列是一个随机游走
+在线场景：随着数据一条条到来，只保存"最新的版本"---
+单步预测时，简单替换，
+多步预测时，水平
+更新O(1),预测O(1)
+2.Seasonal Naive基线：
+“周期的同一位置”
+Naive 预测等价于假设序列是一个随机游走
+在线场景：随着数据一条条到来，只保存"环形缓冲区"---
+单步预测时，周期替换
+多步预测时，周期替换
+更新O(1),预测O(h)
+3.Moving Average基线：
+"用最近w个点的均值来代表“当前水平”，并预测未来都等于这个水平："
+"低通滤波器"---把高频噪声（短时间抖动）平均掉,保留低频成分（慢变化水平）
+“窗口内等权，窗口外权重为 0”
+单步预测时，窗口等权
+多步预测时，窗口等权
+更新O(1),预测O(h)
+4.ETS指数平滑
+维护一组状态变量（水平、趋势、季节），并用递推更新
+水平--->趋势--->季节--->
+水平：“旧估计”和“新观测”的折中
+趋势：“增加涨跌的项”
+季节：“维护一个周期记录季节的偏移量”加性为加减绝对数值，乘性为放缩比例”
+策略 A：固定参数，递推更新：一段历史离线估计α（水平加权）,β（增减加权）,γ（周期偏离加权） 和初值，参数固定
+策略 B：周期性重拟合，参数调整（或许可以做成参数可学习？）
+'''
+'''预测步骤：接受观测--->更新模型状态（递推）--->输出预测序列--->真实值到来'''
+
 # ======= 单步/多步基线预测函数 =======
 
 def naive_forecast(history: pd.Series, horizon: int = 1) -> np.ndarray:
@@ -18,7 +53,7 @@ def naive_forecast(history: pd.Series, horizon: int = 1) -> np.ndarray:
     if len(history) == 0:
         raise ValueError("history is empty")
     last_value = history.iloc[-1]
-    return np.repeat(last_value, horizon)
+    return np.repeat(last_value, horizon)#最后值重复n次后返回
 
 
 def seasonal_naive_forecast(
