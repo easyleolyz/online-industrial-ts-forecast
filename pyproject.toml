@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "online-industrial-ts-forecast"
+version = "0.1.0"
+description = "Online industrial & financial time series forecasting framework (LGBM-Quantile, traditional TS, online conformal, etc.)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Yi Ze", email = "your_email@example.com" }
+]
+
+# 这里不用重复列依赖，主要依赖你已经放在 requirements.txt 里了
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
