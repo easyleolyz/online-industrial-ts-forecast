@@ -140,6 +140,8 @@ def rolling_backtest(
     horizon: int = 1,
     min_history: int = 500,
     forecast_kwargs: Optional[Dict[str, Any]] = None,
+    start_time: Optional[pd.Timestamp] = None,   # 新增
+    end_time: Optional[pd.Timestamp] = None,     # 新增（右开区间）
 ) -> pd.DataFrame:
     """
     对单变量序列做滚动起点回测（单 horizon）：
@@ -161,6 +163,20 @@ def rolling_backtest(
     # t_idx 是“起报位置”（含该点作为历史），预测的是 t_idx + horizon
     start_idx = max(min_history, 0)
     end_idx = n - horizon  # 最后一个可用起报位置
+    
+     # ===== 新增：把“评估窗口”映射到 t_idx 的范围 =====
+    # 评估窗口是对 target_idx（t_idx + horizon）生效
+    if start_time is not None:
+        target_start = times.searchsorted(pd.Timestamp(start_time), side="left")
+        start_idx = max(start_idx, target_start - horizon)
+
+    if end_time is not None:
+        target_end = times.searchsorted(pd.Timestamp(end_time), side="left")  # 右开
+        end_idx = min(end_idx, target_end - horizon)
+
+    if end_idx <= start_idx:
+        return pd.DataFrame(columns=["time", "y_true", "y_pred"])
+
 
     for t_idx in range(start_idx, end_idx):
         history = series.iloc[: t_idx + 1]  # 含当前点

@@ -19,13 +19,15 @@ from online_ts_forecast.traditional.metrics import evaluate_backtest
 
 
 # ======= 配置区域（你可以之后改成读取 yaml 配置） =======
+WARMUP_DAYS = 7
+EVAL_DAYS = 7
 
 DATA_PATH = Path("data/private/tem_data_07.csv")
 TARGET_COL = "冷机3总有功功率"  # 可以先选一个你最熟悉的指标
 FREQ_MINUTES = 5
 DAILY_SEASON = int(24 * 60 / FREQ_MINUTES)  # 288
 HORIZON = 1  # 先做 +5min 单步预测
-MIN_HISTORY = DAILY_SEASON * 2  # 至少两天作为训练历史
+MIN_HISTORY =  max(DAILY_SEASON * 2, WARMUP_DAYS * DAILY_SEASON)  # 至少两天作为训练历史
 
 
 OUTPUT_METRICS_DIR = Path("outputs/metrics")
@@ -73,7 +75,18 @@ def plot_backtest(df: pd.DataFrame, title: str, out_path: Path) -> None:
 
 def run_all_baselines():
     series = load_chiller_series()
+    
+    # 以测试集开头为基准：前 7 天预热，接下来 7 天评估
+    t0 = series.index.min()
+    eval_start = t0 + pd.Timedelta(days=WARMUP_DAYS)
+    eval_end = eval_start + pd.Timedelta(days=EVAL_DAYS)
 
+    # 防御：数据不够长时截断
+    tmax = series.index.max()
+    if eval_start >= tmax:
+        raise ValueError(f"数据不足：eval_start={eval_start} 已超出数据末尾 {tmax}")
+    if eval_end > tmax:
+        eval_end = tmax
     OUTPUT_METRICS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -97,8 +110,11 @@ def run_all_baselines():
             horizon=HORIZON,
             min_history=MIN_HISTORY,
             forecast_kwargs=kwargs,
+            start_time=eval_start,
+            end_time=eval_end,
         )
 
+        tag = f"{eval_start:%Y%m%d}_{eval_end:%Y%m%d}"
         # 保存回测明细
         out_csv = OUTPUT_METRICS_DIR / f"layer0_{name}_chiller_h{HORIZON}.csv"
         df_bt.to_csv(out_csv, index=False, encoding="utf-8-sig")
@@ -116,6 +132,7 @@ def run_all_baselines():
             title=f"{TARGET_COL} - {name} 基线回测 (h={HORIZON})",
             out_path=out_png,
         )
+        
 
     # 汇总 metrics
     if metrics_rows:
