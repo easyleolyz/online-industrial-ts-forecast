@@ -13,6 +13,7 @@ from online_ts_forecast.traditional.arima_models import (
 )
 from online_ts_forecast.traditional.online_eval import online_eval_univar
 from online_ts_forecast.traditional.metrics import evaluate_backtest
+from online_ts_forecast.utils.timing import time_block, attach_timing
 
 
 # ======= 配置 =======
@@ -69,7 +70,9 @@ def plot_online(df: pd.DataFrame, title: str, out_path: Path) -> None:
 
 
 def run_layer1_arima_online():
-    series = load_chiller_series()
+    timing_global = {}
+    with time_block("load_chiller_series", timing_global):
+        series = load_chiller_series()
 
     OUTPUT_METRICS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,27 +86,32 @@ def run_layer1_arima_online():
 
     for name, (func, kwargs) in methods.items():
         print(f"\n=== [Layer1 在线] {name} ===")
-        df_online = online_eval_univar(
-            series=series,
-            forecast_func=func,
-            horizon=HORIZON,
-            warmup_days=WARMUP_DAYS,
-            eval_days=EVAL_DAYS,
-            freq_minutes=FREQ_MINUTES,
-            min_history=MIN_HISTORY,
-            stride_steps=ONLINE_STRIDE_STEPS,
-            forecast_kwargs=kwargs,
-        )
+        timing = {}
+
+        with time_block(f"{name}.online_eval", timing):
+            df_online = online_eval_univar(
+                series=series,
+                forecast_func=func,
+                horizon=HORIZON,
+                warmup_days=WARMUP_DAYS,
+                eval_days=EVAL_DAYS,
+                freq_minutes=FREQ_MINUTES,
+                min_history=MIN_HISTORY,
+                stride_steps=ONLINE_STRIDE_STEPS,
+                forecast_kwargs=kwargs,
+            )
 
         out_csv = OUTPUT_METRICS_DIR / f"{name}_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
         df_online.to_csv(out_csv, index=False, encoding="utf-8-sig")
         print(f"[CSV] 已保存：{out_csv}，样本数={len(df_online)}")
 
         # 评估指标
-        m = evaluate_backtest(
-            df_online.rename(columns={"obs_time": "time"})  # 复用已有接口
-        )
+        m = evaluate_backtest(df_online.rename(columns={"obs_time": "time"}))
         m["method"] = name
+
+        spent = timing.get(f"{name}.online_eval", 0.0)
+        m = attach_timing(m, spent, n_samples=len(df_online), prefix="online_")
+
         metrics_rows.append(m)
 
         out_png = OUTPUT_FIGURES_DIR / f"{name}_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.png"
@@ -115,7 +123,9 @@ def run_layer1_arima_online():
 
     if metrics_rows:
         df_metrics = pd.DataFrame(metrics_rows)
-        df_metrics = df_metrics[["method", "MAE", "RMSE", "sMAPE", "n"]]
+        df_metrics = df_metrics[
+            ["method", "MAE", "RMSE", "sMAPE", "n", "online_time_sec", "online_time_per_sample_ms"]
+        ]
         summary_csv = (
             OUTPUT_METRICS_DIR
             / f"layer1_arima_online_summary_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"

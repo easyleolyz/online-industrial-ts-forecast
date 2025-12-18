@@ -1,5 +1,5 @@
 # src/online_ts_forecast/traditional/run_layer1_var_online_chiller.py
-#预热后进行模型的评估
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,6 +10,7 @@ import pandas as pd
 from online_ts_forecast.traditional.var_models import var_forecast
 from online_ts_forecast.traditional.online_eval import online_eval_multivar_var
 from online_ts_forecast.traditional.metrics import evaluate_backtest
+from online_ts_forecast.utils.timing import time_block, attach_timing
 
 
 # ======= 配置 =======
@@ -78,35 +79,42 @@ def var_forecast_wrapper(history: pd.DataFrame, horizon: int, maxlags: int = 12)
 
 
 def run_layer1_var_online():
-    df_multi = load_chiller_multivar()
+    timing_global = {}
+    with time_block("load_chiller_multivar", timing_global):
+        df_multi = load_chiller_multivar()
 
     OUTPUT_METRICS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\n=== [Layer1 在线] VAR 多变量评估 ===")
-    df_online = online_eval_multivar_var(
-        df=df_multi,
-        target_col=TARGET_COL,
-        var_forecast_func=var_forecast_wrapper,
-        horizon=HORIZON,
-        warmup_days=WARMUP_DAYS,
-        eval_days=EVAL_DAYS,
-        freq_minutes=FREQ_MINUTES,
-        min_history=MIN_HISTORY,
-        stride_steps=ONLINE_STRIDE_STEPS,
-        maxlags=MAXLAGS,
-    )
+    timing = {}
+    with time_block("VAR_online_eval", timing):
+        df_online = online_eval_multivar_var(
+            df=df_multi,
+            target_col=TARGET_COL,
+            var_forecast_func=var_forecast_wrapper,
+            horizon=HORIZON,
+            warmup_days=WARMUP_DAYS,
+            eval_days=EVAL_DAYS,
+            freq_minutes=FREQ_MINUTES,
+            min_history=MIN_HISTORY,
+            stride_steps=ONLINE_STRIDE_STEPS,
+            maxlags=MAXLAGS,
+        )
 
     out_csv = OUTPUT_METRICS_DIR / f"var_online_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
     df_online.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"[CSV] 已保存：{out_csv}，样本数={len(df_online)}")
 
-    m = evaluate_backtest(
-        df_online.rename(columns={"obs_time": "time"})
-    )
+    m = evaluate_backtest(df_online.rename(columns={"obs_time": "time"}))
     m["method"] = "VAR_online"
-    df_metrics = pd.DataFrame([m])[["method", "MAE", "RMSE", "sMAPE", "n"]]
 
+    spent = timing.get("VAR_online_eval", 0.0)
+    m = attach_timing(m, spent, n_samples=len(df_online), prefix="online_")
+
+    df_metrics = pd.DataFrame([m])[
+        ["method", "MAE", "RMSE", "sMAPE", "n", "online_time_sec", "online_time_per_sample_ms"]
+    ]
     summary_csv = OUTPUT_METRICS_DIR / f"layer1_var_online_summary_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
     df_metrics.to_csv(summary_csv, index=False, encoding="utf-8-sig")
     print("\n=== Layer1 VAR 在线评估汇总 ===")

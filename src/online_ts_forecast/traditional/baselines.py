@@ -6,6 +6,8 @@ from typing import Callable, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from typing import Any, Dict, Optional
+from tqdm import tqdm
 
 
 '''
@@ -136,62 +138,59 @@ ForecastFunc = Callable[[pd.Series, int], np.ndarray]
 
 def rolling_backtest(
     series: pd.Series,
-    forecast_func: ForecastFunc,
+    forecast_func,
     horizon: int = 1,
-    min_history: int = 500,
+    min_history: int = 100,
     forecast_kwargs: Optional[Dict[str, Any]] = None,
-    start_time: Optional[pd.Timestamp] = None,   # 新增
-    end_time: Optional[pd.Timestamp] = None,     # 新增（右开区间）
+    stride_steps: int = 1,
+    progress_desc: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    对单变量序列做滚动起点回测（单 horizon）：
-    - 每次用截至 t 的历史，预测 t+h；
-    - 记录 (time, y_true, y_pred)。
-
-    返回 DataFrame: [time, y_true, y_pred]
+    通用滚动回测：
+      - series: 单变量时间序列（DatetimeIndex）
+      - forecast_func(history, horizon, **forecast_kwargs) -> ndarray 长度 >= horizon
+      - horizon: 预测步数（这里一般用 1）
+      - min_history: 起始历史长度
+      - stride_steps: 每隔多少个时间步做一次评估（>=1）
+      - progress_desc: 不为 None 时显示 tqdm 进度条文字
     """
     if forecast_kwargs is None:
         forecast_kwargs = {}
 
     series = series.dropna()
-    values = series.values
     times = series.index
 
     n = len(series)
-    rows = []
-
-    # t_idx 是“起报位置”（含该点作为历史），预测的是 t_idx + horizon
-    start_idx = max(min_history, 0)
-    end_idx = n - horizon  # 最后一个可用起报位置
-    
-     # ===== 新增：把“评估窗口”映射到 t_idx 的范围 =====
-    # 评估窗口是对 target_idx（t_idx + horizon）生效
-    if start_time is not None:
-        target_start = times.searchsorted(pd.Timestamp(start_time), side="left")
-        start_idx = max(start_idx, target_start - horizon)
-
-    if end_time is not None:
-        target_end = times.searchsorted(pd.Timestamp(end_time), side="left")  # 右开
-        end_idx = min(end_idx, target_end - horizon)
-
-    if end_idx <= start_idx:
+    if n <= min_history + horizon:
+        print("[WARN] 序列过短，无法回测。")
         return pd.DataFrame(columns=["time", "y_true", "y_pred"])
 
+    step = max(1, int(stride_steps))
+    start = min_history
+    end = n - horizon
 
-    for t_idx in range(start_idx, end_idx):
-        history = series.iloc[: t_idx + 1]  # 含当前点
-        target_idx = t_idx + horizon
-        y_true = float(values[target_idx])
+    idx_iter = range(start, end, step)
+    if progress_desc is not None:
+        idx_iter = tqdm(idx_iter, desc=progress_desc)
+
+    rows = []
+
+    for i in idx_iter:
+        history = series.iloc[:i]
+        if len(history) < min_history:
+            continue
 
         fcst = forecast_func(history, horizon=horizon, **forecast_kwargs)
-        if len(fcst) < horizon:
-            # 容错：若模型没给够，就跳过
+        if fcst is None or len(fcst) < horizon:
             continue
+
         y_pred = float(fcst[horizon - 1])
+        y_true = float(series.iloc[i + horizon])
+        t_obs = times[i + horizon]
 
         rows.append(
             {
-                "time": times[target_idx],
+                "time": t_obs,
                 "y_true": y_true,
                 "y_pred": y_pred,
             }
@@ -199,7 +198,6 @@ def rolling_backtest(
 
     df = pd.DataFrame(rows)
     return df
-
 
 
 '''
