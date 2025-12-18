@@ -7,6 +7,10 @@ import numpy as np
 import pandas as pd
 from pmdarima import auto_arima
 
+'''
+实现ARIMA和SARIMA模型的预测功能。
+auto_arima搜索最好的参数
+'''
 
 def auto_arima_forecast(
     history: pd.Series,
