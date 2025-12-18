@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib import rcParams
+from tqdm.auto import tqdm
 
 from online_ts_forecast.traditional.metrics import evaluate_backtest
-from online_ts_forecast.traditional.var_models import rolling_backtest_var
+from online_ts_forecast.traditional.var_models import var_forecast
 from online_ts_forecast.utils.timing import time_block, attach_timing
 
+# ---- 中文字体 ----
+rcParams["font.sans-serif"] = ["SimHei"]
+rcParams["axes.unicode_minus"] = False
 
 # ======= 配置 =======
 
@@ -28,6 +34,7 @@ DAILY_SEASON = int(24 * 60 / FREQ_MINUTES)
 
 HORIZON = 1
 MIN_HISTORY = DAILY_SEASON * 2
+BT_STRIDE_STEPS = 12
 MAXLAGS = 12
 
 OUTPUT_METRICS_DIR = Path("outputs/metrics")
@@ -45,6 +52,53 @@ def load_chiller_multivar() -> pd.DataFrame:
 
     df_cov = df[COVARIATE_COLS].dropna()
     return df_cov
+
+
+def offline_backtest_var(
+    df_multi: pd.DataFrame,
+    target_col: str,
+    method_name: str,
+    horizon: int,
+    min_history: int,
+    maxlags: int,
+) -> pd.DataFrame:
+    df_multi = df_multi.dropna()
+    times = df_multi.index
+    n = len(df_multi)
+
+    if n <= min_history + horizon:
+        print("[WARN] 序列过短，无法回测。")
+        return pd.DataFrame(columns=["time", "y_true", "y_pred"])
+
+    rows = []
+    start = min_history
+    end = n - horizon
+
+    idx_iter = range(start, end, BT_STRIDE_STEPS)
+    idx_iter = tqdm(idx_iter, desc=f"{method_name} rolling BT")
+
+    for i in idx_iter:
+        history = df_multi.iloc[:i]
+        if len(history) < min_history:
+            continue
+
+        df_fcst = var_forecast(history, horizon=horizon, maxlags=maxlags)
+        if df_fcst is None or len(df_fcst) < horizon:
+            continue
+
+        y_pred = float(df_fcst[target_col].iloc[horizon - 1])
+        y_true = float(df_multi.iloc[i + horizon][target_col])
+        t_obs = times[i + horizon]
+
+        rows.append(
+            {
+                "time": t_obs,
+                "y_true": y_true,
+                "y_pred": y_pred,
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def plot_backtest(df: pd.DataFrame, title: str, out_path: Path) -> None:
@@ -73,7 +127,7 @@ def plot_backtest(df: pd.DataFrame, title: str, out_path: Path) -> None:
 
 
 def run_layer1_var():
-    timing_global = {}
+    timing_global: Dict[str, float] = {}
     with time_block("load_chiller_multivar", timing_global):
         df_multi = load_chiller_multivar()
 
@@ -81,11 +135,13 @@ def run_layer1_var():
     OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\n=== Layer1 VAR 多变量离线回测 ===")
-    timing = {}
-    with time_block("VAR.rolling_backtest", timing):
-        df_bt = rolling_backtest_var(
-            df_multi,
+    timing: Dict[str, float] = {}
+
+    with time_block("VAR.offline_backtest", timing):
+        df_bt = offline_backtest_var(
+            df_multi=df_multi,
             target_col=TARGET_COL,
+            method_name="VAR",
             horizon=HORIZON,
             min_history=MIN_HISTORY,
             maxlags=MAXLAGS,
@@ -98,12 +154,19 @@ def run_layer1_var():
     m = evaluate_backtest(df_bt)
     m["method"] = "VAR"
 
-    spent = timing.get("VAR.rolling_backtest", 0.0)
+    spent = timing.get("VAR.offline_backtest", 0.0)
     m = attach_timing(m, spent, n_samples=len(df_bt), prefix="offline_")
 
     df_metrics = pd.DataFrame([m])[
-        ["method", "MAE", "RMSE", "sMAPE", "n",
-         "offline_time_sec", "offline_time_per_sample_ms"]
+        [
+            "method",
+            "MAE",
+            "RMSE",
+            "sMAPE",
+            "n",
+            "offline_time_sec",
+            "offline_time_per_sample_ms",
+        ]
     ]
     summary_csv = OUTPUT_METRICS_DIR / f"layer1_var_summary_chiller_h{HORIZON}.csv"
     df_metrics.to_csv(summary_csv, index=False, encoding="utf-8-sig")

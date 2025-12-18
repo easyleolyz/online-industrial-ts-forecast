@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib import rcParams
+from tqdm.auto import tqdm
 
-from online_ts_forecast.traditional.var_models import var_forecast
-from online_ts_forecast.traditional.online_eval import online_eval_multivar_var
 from online_ts_forecast.traditional.metrics import evaluate_backtest
+from online_ts_forecast.traditional.var_models import var_forecast
 from online_ts_forecast.utils.timing import time_block, attach_timing
 
+# ---- 中文字体 ----
+rcParams["font.sans-serif"] = ["SimHei"]
+rcParams["axes.unicode_minus"] = False
 
 # ======= 配置 =======
 
@@ -49,6 +54,81 @@ def load_chiller_multivar() -> pd.DataFrame:
     return df_cov
 
 
+def _define_online_window(
+    times: pd.DatetimeIndex,
+    warmup_days: int,
+    eval_days: int,
+) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    t0 = times.min()
+    warmup_end = t0 + pd.Timedelta(days=warmup_days)
+    eval_end = warmup_end + pd.Timedelta(days=eval_days)
+    return warmup_end, eval_end
+
+
+def online_eval_multivar_var_with_tqdm(
+    df: pd.DataFrame,
+    target_col: str,
+    method_name: str,
+    horizon: int,
+    warmup_days: int,
+    eval_days: int,
+    freq_minutes: int,
+    min_history: int,
+    stride_steps: int,
+    maxlags: int,
+) -> pd.DataFrame:
+    """
+    VAR 在线评估（本文件局部版本），带 tqdm 进度条。
+    """
+    df = df.dropna()
+    df = df.sort_index()
+    times = df.index
+
+    warmup_end, eval_end = _define_online_window(times, warmup_days, eval_days)
+    freq = pd.Timedelta(minutes=freq_minutes)
+
+    eval_mask = (times > warmup_end) & (times <= eval_end)
+    eval_times = times[eval_mask]
+
+    rows = []
+
+    if len(eval_times) == 0:
+        print("[WARN] 在线评估窗口为空。")
+        return pd.DataFrame(columns=["obs_time", "y_true", "y_pred"])
+
+    iterator = enumerate(eval_times)
+    iterator = tqdm(iterator, total=len(eval_times), desc=f"{method_name} online")
+
+    for i, obs_time in iterator:
+        if i % stride_steps != 0:
+            continue
+
+        issue_time = obs_time - horizon * freq
+        history = df[df.index <= issue_time]
+        if len(history) < min_history:
+            continue
+
+        df_fcst = var_forecast(history, horizon=horizon, maxlags=maxlags)
+        if df_fcst is None or len(df_fcst) < horizon:
+            continue
+
+        try:
+            y_true = float(df.loc[obs_time][target_col])
+        except KeyError:
+            continue
+        y_pred = float(df_fcst[target_col].iloc[horizon - 1])
+
+        rows.append(
+            {
+                "obs_time": obs_time,
+                "y_true": y_true,
+                "y_pred": y_pred,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def plot_online(df: pd.DataFrame, title: str, out_path: Path) -> None:
     if df.empty:
         print(f"[WARN] 空在线结果，跳过绘图：{title}")
@@ -74,12 +154,8 @@ def plot_online(df: pd.DataFrame, title: str, out_path: Path) -> None:
     print(f"[图] 已保存：{out_path}")
 
 
-def var_forecast_wrapper(history: pd.DataFrame, horizon: int, maxlags: int = 12) -> pd.DataFrame:
-    return var_forecast(history, horizon=horizon, maxlags=maxlags)
-
-
 def run_layer1_var_online():
-    timing_global = {}
+    timing_global: Dict[str, float] = {}
     with time_block("load_chiller_multivar", timing_global):
         df_multi = load_chiller_multivar()
 
@@ -87,12 +163,13 @@ def run_layer1_var_online():
     OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
     print("\n=== [Layer1 在线] VAR 多变量评估 ===")
-    timing = {}
-    with time_block("VAR_online_eval", timing):
-        df_online = online_eval_multivar_var(
+    timing: Dict[str, float] = {}
+
+    with time_block("VAR.online_eval", timing):
+        df_online = online_eval_multivar_var_with_tqdm(
             df=df_multi,
             target_col=TARGET_COL,
-            var_forecast_func=var_forecast_wrapper,
+            method_name="VAR_online",
             horizon=HORIZON,
             warmup_days=WARMUP_DAYS,
             eval_days=EVAL_DAYS,
@@ -102,29 +179,49 @@ def run_layer1_var_online():
             maxlags=MAXLAGS,
         )
 
-    out_csv = OUTPUT_METRICS_DIR / f"var_online_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
+    out_csv = (
+        OUTPUT_METRICS_DIR
+        / f"var_online_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
+    )
     df_online.to_csv(out_csv, index=False, encoding="utf-8-sig")
     print(f"[CSV] 已保存：{out_csv}，样本数={len(df_online)}")
 
     m = evaluate_backtest(df_online.rename(columns={"obs_time": "time"}))
     m["method"] = "VAR_online"
 
-    spent = timing.get("VAR_online_eval", 0.0)
+    spent = timing.get("VAR.online_eval", 0.0)
     m = attach_timing(m, spent, n_samples=len(df_online), prefix="online_")
 
     df_metrics = pd.DataFrame([m])[
-        ["method", "MAE", "RMSE", "sMAPE", "n", "online_time_sec", "online_time_per_sample_ms"]
+        [
+            "method",
+            "MAE",
+            "RMSE",
+            "sMAPE",
+            "n",
+            "online_time_sec",
+            "online_time_per_sample_ms",
+        ]
     ]
-    summary_csv = OUTPUT_METRICS_DIR / f"layer1_var_online_summary_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
+    summary_csv = (
+        OUTPUT_METRICS_DIR
+        / f"layer1_var_online_summary_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.csv"
+    )
     df_metrics.to_csv(summary_csv, index=False, encoding="utf-8-sig")
     print("\n=== Layer1 VAR 在线评估汇总 ===")
     print(df_metrics)
     print(f"[汇总] 已保存：{summary_csv}")
 
-    out_png = OUTPUT_FIGURES_DIR / f"var_online_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.png"
+    out_png = (
+        OUTPUT_FIGURES_DIR
+        / f"var_online_chiller_h{HORIZON}_warmup{WARMUP_DAYS}d_eval{EVAL_DAYS}d.png"
+    )
     plot_online(
         df_online,
-        title=f"{TARGET_COL} - VAR 多变量在线评估 (h={HORIZON}, warmup={WARMUP_DAYS}d, eval={EVAL_DAYS}d)",
+        title=(
+            f"{TARGET_COL} - VAR 多变量在线评估 "
+            f"(h={HORIZON}, warmup={WARMUP_DAYS}d, eval={EVAL_DAYS}d)"
+        ),
         out_path=out_png,
     )
 
